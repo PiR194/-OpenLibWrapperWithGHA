@@ -1,0 +1,155 @@
+kind: pipeline
+type: docker
+name: OpenLibPipeLine
+
+trigger:
+  event:
+    - push
+
+volume:
+  - name: docs
+    temp: {}
+  
+steps:
+
+  # - name: build
+  #   image: mcr.microsoft.com/dotnet/sdk:7.0
+  #   volumes:
+  #     - name: docs
+  #       path: /docs
+  #   commands:
+  #     - cd Sources/
+  #     - dotnet restore 	OpenLibraryWS_Wrapper.sln
+  #     - dotnet build 	OpenLibraryWS_Wrapper.sln -c Release --no-restore
+  #     - dotnet publish 	OpenLibraryWS_Wrapper.sln -c Release --no-restore -o CI_PROJECT_DIR/build/release
+  #     - dotnet new tool-manifest
+  #     - dotnet tool install --version 6.5.0 Swashbuckle.AspNetCore.Cli
+  #     - dotnet swagger tofile --output /docs/swagger.json CI_PROJECT_DIR/build/release/OpenLibraryWS_WrapperC1.dll OpenLibraryWS_WrapperC1.xml
+
+
+  # - name: docker-build-and-push
+  #   image: plugins/docker
+  #   settings:
+  #     dockerfile: Sources/API_LoL/Dockerfile
+  #     context: Sources/
+  #     registry: hub.codefirst.iut.uca.fr
+  #     repo: hub.codefirst.iut.uca.fr/corentin.richard/entityframework_consodeservices_tp
+
+  #     username:
+  #       from_secret: SECRET_REGISTRY_USERNAME
+  #     password:
+  #       from_secret: SECRET_REGISTRY_PASSWORD 
+
+  # docker test
+  # - name: tests
+  #   image: mcr.microsoft.com/dotnet/sdk:7.0
+  #   commands:
+  #     - cd Sources/
+  #     - dotnet restore OpenLibraryWS_Wrapper.sln
+  #     - dotnet test OpenLibraryWS_Wrapper.sln --no-restore
+  #   depends_on: [build]
+
+
+  # - name: code-inspection
+  #   image: hub.codefirst.iut.uca.fr/marc.chevaldonne/codefirst-dronesonarplugin-dotnet7
+  #   secrets: [ SECRET_SONAR_LOGIN ]
+  #   settings:
+  #     sonar_host: https://codefirst.iut.uca.fr/sonar/
+  #     sonar_token:
+  #       from_secret: SECRET_SONAR_LOGIN
+  #   commands:
+  #     - cd Sources/
+  #     - dotnet restore OpenLibraryWS_Wrapper.sln
+  #     - dotnet sonarscanner begin /k:OpenLibraryWS_WrapperPiferreira /d:sonar.host.url=$${PLUGIN_SONAR_HOST} /d:sonar.coverageReportPaths="coveragereport/SonarQube.xml" /d:sonar.coverage.exclusions="Tests/**" /d:sonar.login=$${PLUGIN_SONAR_TOKEN} 
+  #     - dotnet build OpenLibraryWS_Wrapper.sln -c Release --no-restore
+  #     - dotnet test OpenLibraryWS_Wrapper.sln --logger trx --no-restore /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura --collect "XPlat Code Coverage"
+  #     - reportgenerator -reports:"**/coverage.cobertura.xml" -reporttypes:SonarQube -targetdir:"coveragereport"
+  #     - dotnet publish OpenLibraryWS_Wrapper.sln -c Release --no-restore -o CI_PROJECT_DIR/build/release
+  #     - dotnet sonarscanner end /d:sonar.login=$${PLUGIN_SONAR_TOKEN}
+  #   depends_on: [tests]
+
+
+  # - name: generate-and-deploy-docs
+  #   image: hub.codefirst.iut.uca.fr/thomas.bellembois/codefirst-docdeployer
+  #   failure: ignore
+  #   volumes:
+  #     - name: docs
+  #       path: /docs
+  #   commands:
+  #     - /entrypoint.sh
+# docker image build
+
+  - name: intall-hadolint
+    image: hadolint/hadolint:latest-debian
+    commands:
+      - cd docs/
+      - hadolint  Dockerfile
+
+  # - name: hadolint
+  #   image: hadolint/hadolint:latest-debian
+  #   # image: ghcr.io/hadolint/hadolint:latest-debian
+  #   commands:
+  #     #- hadolint --version
+  #     - hadolint  docs/Dockerfile
+
+
+  - name: docker-build-and-push
+    image: plugins/docker
+    settings:
+      dockerfile: docs/Dockerfile
+      context: Sources/
+      registry: hub.codefirst.iut.uca.fr
+      repo: hub.codefirst.iut.uca.fr/pierre.ferreira/openlibraryws_wrapperc1
+      username:
+        from_secret: SECRET_REGISTRY_USERNAME
+      password:
+        from_secret: SECRET_REGISTRY_PASSWORD
+    depends_on: [intall-hadolint]
+
+  # container deployment
+  - name: deploy-container
+    image: hub.codefirst.iut.uca.fr/thomas.bellembois/codefirst-dockerproxy-clientdrone:latest
+    environment:
+      IMAGENAME: hub.codefirst.iut.uca.fr/pierre.ferreira/openlibraryws_wrapperc1
+      CONTAINERNAME: containerwrap
+      COMMAND: create
+      OVERWRITE: true
+      CODEFIRST_CLIENTDRONE_ENV_STUBAPI:
+        from_secret: STUBAPI
+      CODEFIRST_CLIENTDRONE_ENV_STUBAPIDB:
+        from_secret: STUBAPIDB
+    depends_on: [intall-hadolint, docker-build-and-push]
+
+  
+  - name: deploy-container-mariadb
+    image: hub.codefirst.iut.uca.fr/thomas.bellembois/codefirst-dockerproxy-clientdrone:latest
+    environment:
+      IMAGENAME: mariadb:10
+      CONTAINERNAME: mysql
+      COMMAND: create
+      # OVERWRITE: false
+      OVERWRITE: true
+      PRIVATE: true
+      CODEFIRST_CLIENTDRONE_ENV_MARIA_DB_ROOT_PASSWORD:
+        from_secret: db_root_password
+      CODEFIRST_CLIENTDRONE_ENV_MARIA_DB_DATABASE:
+        from_secret: db_database
+      CODEFIRST_CLIENTDRONE_ENV_MARIA_DB_USER:
+        from_secret: db_user
+      CODEFIRST_CLIENTDRONE_ENV_MARIA_DB_PASSWORD:
+        from_secret: db_password
+      ADMINS: pierreferreira
+    depends_on: [intall-hadolint, docker-build-and-push]
+
+  - name: deploy-container-webapi-bdd
+    image: hub.codefirst.iut.uca.fr/thomas.bellembois/codefirst-dockerproxy-clientdrone:latest
+    environment:
+      IMAGENAME: hub.codefirst.iut.uca.fr/pierre.ferreira/openlibraryws_wrapperc1
+      CONTAINERNAME: containerwrapwebapi
+      COMMAND: create
+      OVERWRITE: true
+      CODEFIRST_CLIENTDRONE_ENV_BDDAPI:
+        from_secret: BDDAPI
+      CODEFIRST_CLIENTDRONE_ENV_DB_SERVER:
+        from_secret: db_server
+    depends_on: [docker-build-and-push]
